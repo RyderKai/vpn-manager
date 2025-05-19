@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=VPN Manager
+Comment=Launch your VPN manager GUI
+Exec= vpn-gui
+Icon=network-vpn
+Terminal=false
+Type=Application
+Categories=Network;Utility;
+StartupNotify=true

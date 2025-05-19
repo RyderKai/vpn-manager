@@ -1,0 +1,199 @@
+#!/bin/bash
+
+CONFIG_FILE="$HOME/.vpn_gui_settings"
+LOG_FILE="$HOME/.vpn_connect.log"
+
+# Defaults
+MAIN_WIDTH=400
+MAIN_HEIGHT=250
+LIST_WIDTH=600
+LIST_HEIGHT=400
+FILESEL_WIDTH=600
+FILESEL_HEIGHT=400
+INFO_WIDTH=400
+INFO_HEIGHT=150
+
+MAIN_TITLE="VPN Manager"
+MAIN_TEXT="Choose an action:"
+SELECT_TITLE="Select VPN Config"
+SELECT_TEXT="Choose your VPN config file:"
+SETTINGS_TITLE="Settings"
+SETTINGS_TEXT="Configure VPN paths"
+LOGS_TITLE="VPN Logs"
+
+TEXT_COLOR="#FFFFFF"
+BACKGROUND_IMAGE=""
+TRANSPARENCY=1
+
+VPN_DIR="$HOME/vpnconfigs"
+CRED_FILE="$HOME/.vpn_credentials"
+
+if [ -f "$CONFIG_FILE" ]; then
+  source "$CONFIG_FILE"
+fi
+
+function save_settings() {
+  {
+    echo "VPN_DIR=\"$VPN_DIR\""
+    echo "CRED_FILE=\"$CRED_FILE\""
+    echo "MAIN_WIDTH=$MAIN_WIDTH"
+    echo "MAIN_HEIGHT=$MAIN_HEIGHT"
+    echo "LIST_WIDTH=$LIST_WIDTH"
+    echo "LIST_HEIGHT=$LIST_HEIGHT"
+    echo "FILESEL_WIDTH=$FILESEL_WIDTH"
+    echo "FILESEL_HEIGHT=$FILESEL_HEIGHT"
+    echo "INFO_WIDTH=$INFO_WIDTH"
+    echo "INFO_HEIGHT=$INFO_HEIGHT"
+    echo "MAIN_TITLE=\"$MAIN_TITLE\""
+    echo "MAIN_TEXT=\"$MAIN_TEXT\""
+    echo "SELECT_TITLE=\"$SELECT_TITLE\""
+    echo "SELECT_TEXT=\"$SELECT_TEXT\""
+    echo "SETTINGS_TITLE=\"$SETTINGS_TITLE\""
+    echo "SETTINGS_TEXT=\"$SETTINGS_TEXT\""
+    echo "TEXT_COLOR=\"$TEXT_COLOR\""
+    echo "BACKGROUND_IMAGE=\"$BACKGROUND_IMAGE\""
+    echo "TRANSPARENCY=$TRANSPARENCY"
+  } > "$CONFIG_FILE"
+}
+
+function stop_vpn() {
+  if [ -f "$HOME/.vpn_pid" ]; then
+    PID=$(cat "$HOME/.vpn_pid")
+    if kill -0 "$PID" 2>/dev/null; then
+      kill -TERM "$PID" 2>/dev/null
+      sleep 3
+      if kill -0 "$PID" 2>/dev/null; then
+        zenity --warning --text="Failed to stop VPN process cleanly."
+        return 1
+      else
+        rm -f "$HOME/.vpn_pid"
+        return 0
+      fi
+    else
+      rm -f "$HOME/.vpn_pid"
+      return 0
+    fi
+  else
+    # Optional: silently continue if no VPN running
+    return 0
+  fi
+}
+
+function start_vpn() {
+  stop_vpn
+
+  if [ ! -f "$selected_file" ]; then
+    zenity --error --title="VPN Error" --text="VPN config file missing."
+    return 1
+  fi
+
+  if [ ! -f "$CRED_FILE" ]; then
+    zenity --error --title="VPN Error" --text="Credentials file missing."
+    return 1
+  fi
+
+  sudo openvpn --config "$selected_file" --auth-user-pass "$CRED_FILE" >"$LOG_FILE" 2>&1 &
+  VPN_PID=$!
+  echo $VPN_PID > "$HOME/.vpn_pid"
+
+  sleep 5
+
+  if ! kill -0 "$VPN_PID" 2>/dev/null; then
+    zenity --error --title="VPN Error" --text="Failed to start VPN. Check logs."
+    return 1
+  fi
+
+  zenity --notification --text="VPN connected using $selected"
+  return 0
+}
+
+while true; do
+  action=$(zenity --list --title="$MAIN_TITLE" --text="$MAIN_TEXT" \
+    --column="Action" --width="$MAIN_WIDTH" --height="$MAIN_HEIGHT" \
+    "Select VPN" "Settings" "Logs" "Stop VPN" "Quit")
+
+  case "$action" in
+    "Select VPN")
+      if [ ! -d "$VPN_DIR" ]; then
+        zenity --error --title="Error" --text="VPN config folder not found:\n$VPN_DIR"
+        continue
+      fi
+
+      mapfile -t vpn_files < <(find "$VPN_DIR" -maxdepth 1 -name "*.ovpn" 2>/dev/null)
+
+      if [ ${#vpn_files[@]} -eq 0 ]; then
+        zenity --error --title="Error" --text="No .ovpn files found in:\n$VPN_DIR"
+        continue
+      fi
+
+      choices=()
+      for f in "${vpn_files[@]}"; do
+        filename=$(basename "$f")
+        desc=$(head -n 1 "$f" | grep -oP '^#\s*\K.*' || echo "")
+        choices+=("$filename" "$desc")
+      done
+
+      selected=$(zenity --list \
+        --title="$SELECT_TITLE" \
+        --text="$SELECT_TEXT" \
+        --column="Config File" --column="Description" \
+        "${choices[@]}" \
+        --width="$LIST_WIDTH" --height="$LIST_HEIGHT" \
+        --ok-label="Connect" --cancel-label="Back")
+
+      [ -z "$selected" ] && continue
+
+      selected_file="$VPN_DIR/$selected"
+
+      if [ ! -s "$selected_file" ]; then
+        zenity --error --title="Error" --text="Selected config is empty."
+        continue
+      fi
+
+      if ! grep -qE '^\s*(dev|remote|client)\b' "$selected_file"; then
+        zenity --error --title="Error" --text="Invalid OpenVPN config."
+        continue
+      fi
+
+      zenity --question --title="Connect to VPN?" --text="Connect using:\n$selected?"
+      if [ $? -ne 0 ]; then
+        continue
+      fi
+
+      if ! start_vpn; then
+        zenity --text-info --title="$LOGS_TITLE" --filename="$LOG_FILE" --width=700 --height=500
+      fi
+      ;;
+
+    "Settings")
+      new_vpn_dir=$(zenity --file-selection --directory --title="$SETTINGS_TITLE - Select VPN Config Folder" --filename="$VPN_DIR/" --width="$FILESEL_WIDTH" --height="$FILESEL_HEIGHT")
+      [ -n "$new_vpn_dir" ] && VPN_DIR="$new_vpn_dir"
+
+      new_cred_file=$(zenity --file-selection --title="$SETTINGS_TITLE - Select Credential File" --filename="$CRED_FILE" --width="$FILESEL_WIDTH" --height="$FILESEL_HEIGHT")
+      [ -n "$new_cred_file" ] && CRED_FILE="$new_cred_file"
+
+      save_settings
+      zenity --info --text="Settings saved." --width="$INFO_WIDTH" --height="$INFO_HEIGHT"
+      ;;
+
+    "Logs")
+      if [ -f "$LOG_FILE" ]; then
+        zenity --text-info --title="$LOGS_TITLE" --filename="$LOG_FILE" --width=700 --height=500
+      else
+        zenity --info --title="$LOGS_TITLE" --text="No log file found."
+      fi
+      ;;
+
+    "Stop VPN")
+      if stop_vpn; then
+        zenity --info --text="VPN stopped." --width="$INFO_WIDTH" --height="$INFO_HEIGHT"
+      else
+        zenity --warning --text="VPN could not be stopped cleanly." --width="$INFO_WIDTH" --height="$INFO_HEIGHT"
+      fi
+      ;;
+
+    "Quit" | *)
+      exit 0
+      ;;
+  esac
+done
